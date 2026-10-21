@@ -25,11 +25,11 @@ Ljud, talsyntes, röstigenkänning, poäng, synliga timers, konton, backend, ana
 
 ## Designregler (får inte brytas)
 
-1. Texten visas före scenen ändras. Stor gemen text (minst 36 px), luftig, systemfont, inget rör sig medan barnet läser.
+1. Texten visas före scenen ändras. Meningar skrivs som i böcker: stor första bokstav, i övrigt gemener, aldrig hela ord i versaler. Minst 36 px, systemfont, luftig, inget rör sig medan barnet läser. Undantag: ljudord och utrop i pratbubblor får skrivas i versaler (t.ex. "KVACK").
 2. Målbilden visas aldrig. Scenen ändras först efter rätt handling.
 3. Max 2 tryck per steg.
 4. Tryck-tryck, inget drag-och-släpp.
-5. Fel handling: kort rolig felanimation (max 600 ms), steget klaras inte, ingen ledtråd, ingen text om att det blev fel.
+5. Fel handling: kort rolig felanimation (max 600 ms), steget klaras inte, ingen ledtråd, ingen text om att det blev fel. Felanimationer är bara rörelse, aldrig bubblor eller emojis.
 6. För varje tryckroll i ett steg ska scenen ha minst 3 kandidater men bara en rätt tolkning av meningen.
 7. Allt fungerar utan hover och utan tangentbord.
 
