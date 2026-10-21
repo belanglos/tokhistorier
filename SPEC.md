@@ -33,6 +33,7 @@ Ljud, talsyntes, röstigenkänning, poäng, synliga timers, konton, backend, ana
 6. För varje tryckroll i ett steg ska scenen ha minst 3 kandidater men bara en rätt tolkning av meningen.
 7. Allt fungerar utan hover och utan tangentbord.
 8. Ankarnas geometri beräknas ur värdens storlek. 'Bakom' och 'i' ritas bakom värden, 'på' framför. En värd har inte både 'i' och 'bakom'. Ankarrutor för samma värd överlappar inte.
+9. Platser är aldrig tryckbara, de är bara värdar för ankare. Träffordning: figurer/föremål, sedan ankarrutor.
 
 ## Tryck per verb
 

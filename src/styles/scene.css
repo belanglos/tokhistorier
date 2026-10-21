@@ -44,6 +44,11 @@
   line-height: 1;
 }
 
+/* Places are only hosts for anchors, never tappable. */
+.ent.place {
+  pointer-events: none;
+}
+
 .glyph {
   display: inline-block;
   transform-origin: 50% 100%;

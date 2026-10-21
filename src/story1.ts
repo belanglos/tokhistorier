@@ -1,9 +1,21 @@
 // Story 1 ("Katten och tofflan"), hardcoded. The scene is a list of entities
 // with positions and anchors so it can be turned into data later.
 import "./styles/scene.css";
-
-type AnchorKind = "on" | "under" | "in" | "behind" | "beside";
-type AnchorRef = { entity: string; anchor: AnchorKind };
+import {
+  ANCHOR_KINDS,
+  aboveHost,
+  anchorRect,
+  boxOf,
+  createScene,
+  isBehind,
+  must,
+  sameRef,
+  type AnchorKind,
+  type AnchorRef,
+  type Entity,
+  type Rect,
+  type Tap,
+} from "./scene";
 
 type Effect =
   | { type: "bubble"; entity: string; emoji: string }
@@ -20,31 +32,9 @@ type ActionStep = {
   effects?: Effect[];
 };
 
-type Point = { x: number; y: number };
-type Rect = { x: number; y: number; w: number; h: number };
-
-type Entity = {
-  id: string;
-  kind: "place" | "figure" | "object";
-  emoji: string;
-  svg?: string; // replaces the emoji when set
-  size: number; // height of the bounding box
-  aspect?: number; // width / height, default 1
-  seat?: number; // seat line as a fraction of the height from the top, default 0.5
-  floor?: number; // where feet rest for "in", as a fraction of the height from the top, default 0.7
-  x: number;
-  y: number;
-  // Listed anchors get the default geometry for their kind; fields given here override it.
-  // Rects are relative to the entity's foot point (bottom center).
-  anchors?: Partial<Record<AnchorKind, Partial<Rect>>>;
-  hidden?: boolean;
-};
-
 const W = 1000;
 const H = 600;
 const FLOOR = 590;
-const STACK = 55;
-const ANCHOR_KINDS: readonly AnchorKind[] = ["on", "under", "in", "behind", "beside"];
 
 // Simple one-colour sofa: the 🛋️ emoji has a lamp and no clear seat on some platforms.
 const SOFA_SVG = `<svg viewBox="0 0 150 100" width="100%" height="100%" fill="#d9634c" stroke="#fdf6e3" stroke-width="3">
@@ -58,7 +48,7 @@ const SOFA_SVG = `<svg viewBox="0 0 150 100" width="100%" height="100%" fill="#d
   <rect x="119" y="83" width="9" height="17"/>
 </svg>`;
 
-const ENTITIES: Entity[] = [
+export const ENTITIES: Entity[] = [
   {
     id: "sang",
     kind: "place",
@@ -111,11 +101,11 @@ const ENTITIES: Entity[] = [
   },
   // Only there as a third actor candidate.
   { id: "hund", kind: "figure", emoji: "🐶", size: 90, x: 945, y: 570 },
-  { id: "toffla", kind: "object", emoji: "🩴", size: 70, x: 120, y: 585 },
-  { id: "strumpa", kind: "object", emoji: "🧦", size: 70, x: 400, y: 585 },
-  { id: "boll", kind: "object", emoji: "⚽", size: 70, x: 700, y: 585 },
-  { id: "hatt", kind: "object", emoji: "🎩", size: 70, x: 850, y: 585 },
-  { id: "anka", kind: "object", emoji: "🦆", size: 80, x: 0, y: 0, hidden: true },
+  { id: "toffla", kind: "item", emoji: "🩴", size: 70, x: 120, y: 585 },
+  { id: "strumpa", kind: "item", emoji: "🧦", size: 70, x: 400, y: 585 },
+  { id: "boll", kind: "item", emoji: "⚽", size: 70, x: 700, y: 585 },
+  { id: "hatt", kind: "item", emoji: "🎩", size: 70, x: 850, y: 585 },
+  { id: "anka", kind: "item", emoji: "🦆", size: 80, x: 0, y: 0, hidden: true },
   { id: "mus", kind: "figure", emoji: "🐭", size: 60, x: 0, y: 0, hidden: true },
 ];
 
@@ -160,58 +150,22 @@ const STEPS: ActionStep[] = [
   { kind: "action", text: "Pappa tar tofflan.", verb: "take", actor: "pappa", object: "toffla" },
 ];
 
-type Tap = { kind: "entity"; id: string } | { kind: "anchor"; ref: AnchorRef };
-type Parent =
-  | { type: "held"; by: string; worn: boolean }
-  | { type: "anchor"; ref: AnchorRef; order: number };
-type EntityState = { x: number; y: number; parent: Parent | null };
-
 const MISTAKES = ["spin", "topple", "shake", "recoil"] as const;
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
-function must<T>(value: T | null | undefined, what: string): T {
-  if (value === null || value === undefined) throw new Error(`Missing ${what}`);
-  return value;
-}
-
-const sameRef = (a: AnchorRef, b: AnchorRef) => a.entity === b.entity && a.anchor === b.anchor;
-
-// --- Anchor geometry, derived from the host's bounding box ---
-
-const boxOf = (e: Entity) => ({ w: e.size * (e.aspect ?? 1), h: e.size });
-
-// "behind" and "in" are drawn behind the host; every other anchor in front of it.
-const isBehind = (kind: AnchorKind) => kind === "behind" || kind === "in";
-
-function anchorRect(e: Entity, kind: AnchorKind): Rect {
-  const { w, h } = boxOf(e);
-  const seatY = -h + (e.seat ?? 0.5) * h;
-  const defaults: Record<AnchorKind, Rect> = {
-    on: { x: -0.4 * w, y: seatY - 0.3 * h, w: 0.8 * w, h: 0.3 * h },
-    under: { x: -0.35 * w, y: 0, w: 0.7 * w, h: 0.25 * h },
-    // Shifted up and right: only the top sticks out above the host.
-    behind: { x: -0.15 * w, y: -1.35 * h, w: 0.6 * w, h: 0.75 * h },
-    // Bottom on the floor line, so the host's front hides the occupant's lower part.
-    in: { x: -0.3 * w, y: -1.3 * h, w: 0.6 * w, h: (e.floor ?? 0.7) * h + 0.3 * h },
-    beside: { x: 0.6 * w, y: -0.6 * h, w: 0.6 * w, h: 0.6 * h },
-  };
-  return { ...defaults[kind], ...e.anchors?.[kind] };
-}
 
 // Dev check: anchor rects of one host must not overlap. For "behind" and "in"
 // only the part that sticks out above the host counts, the rest is hidden by it.
 function warnOverlappingAnchors(): void {
   const TOLERANCE = 4;
   for (const e of ENTITIES) {
-    const top = -boxOf(e).h;
     const kinds = ANCHOR_KINDS.filter((k) => e.anchors?.[k]);
     if (kinds.includes("in") && kinds.includes("behind")) {
       console.warn(`${e.id} has both "in" and "behind"; a host may only have one of them`);
     }
     const visible = (k: AnchorKind): Rect => {
       const r = anchorRect(e, k);
-      return isBehind(k) ? { ...r, h: Math.max(0, Math.min(r.y + r.h, top) - r.y) } : r;
+      return isBehind(k) ? aboveHost(e, r) : r;
     };
     kinds.forEach((a, i) => {
       for (const b of kinds.slice(i + 1)) {
@@ -227,6 +181,19 @@ function warnOverlappingAnchors(): void {
   }
 }
 
+// Dev check: actors must be figures, objects must be items.
+function checkRoles(): void {
+  const kindOf = (id: string) => ENTITIES.find((e) => e.id === id)?.kind;
+  STEPS.forEach((step, i) => {
+    if (step.actor !== undefined && kindOf(step.actor) !== "figure") {
+      console.error(`Step ${i + 1}: actor "${step.actor}" must be a figure, is ${kindOf(step.actor)}`);
+    }
+    if (step.object !== undefined && kindOf(step.object) !== "item") {
+      console.error(`Step ${i + 1}: object "${step.object}" must be an item, is ${kindOf(step.object)}`);
+    }
+  });
+}
+
 function isCorrect(step: ActionStep, a: Tap, b: Tap): boolean {
   const first = step.verb === "put" ? step.object : step.actor;
   if (a.kind !== "entity" || a.id !== first) return false;
@@ -236,29 +203,16 @@ function isCorrect(step: ActionStep, a: Tap, b: Tap): boolean {
 
 // Plays the story in `scene`. Resolves when the finale is done.
 function runStory(scene: HTMLElement, sentence: HTMLElement): Promise<void> {
-  const defs = new Map(ENTITIES.map((e) => [e.id, e]));
-  const def = (id: string) => must(defs.get(id), `entity ${id}`);
-  const rects = new Map<string, Rect>();
-  for (const e of ENTITIES) {
-    for (const k of ANCHOR_KINDS) if (e.anchors?.[k]) rects.set(`${e.id}.${k}`, anchorRect(e, k));
-  }
-  const rectOf = (ref: AnchorRef) =>
-    must(rects.get(`${ref.entity}.${ref.anchor}`), `anchor ${ref.entity}.${ref.anchor}`);
-
-  const state = new Map<string, EntityState>(
-    ENTITIES.map((e) => [e.id, { x: e.x, y: e.y, parent: null }]),
-  );
-  const st = (id: string) => must(state.get(id), `state ${id}`);
-  let order = 0;
+  const model = createScene(ENTITIES);
+  const { def, absPos, free, hold, attach } = model;
 
   const nodes = new Map<string, { el: HTMLElement; glyph: HTMLElement }>();
   const node = (id: string) => must(nodes.get(id), `node ${id}`);
   const zones: { el: HTMLElement; ref: AnchorRef }[] = [];
-  const tapByEl = new Map<Element, Tap>();
 
   for (const e of ENTITIES) {
     const el = document.createElement("div");
-    el.className = "ent";
+    el.className = e.kind === "place" ? "ent place" : "ent";
     el.dataset.entity = e.id;
     el.style.fontSize = `${e.size}px`;
     el.hidden = e.hidden ?? false;
@@ -275,108 +229,14 @@ function runStory(scene: HTMLElement, sentence: HTMLElement): Promise<void> {
     el.append(glyph);
     scene.append(el);
     nodes.set(e.id, { el, glyph });
-    tapByEl.set(el, { kind: "entity", id: e.id });
 
-    for (const anchor of ANCHOR_KINDS) {
-      if (!e.anchors?.[anchor]) continue;
-      const ref = { entity: e.id, anchor };
-      const r = rectOf(ref);
+    for (const ref of model.anchorRefs.filter((r) => r.entity === e.id)) {
       const zone = document.createElement("div");
       zone.className = "anchor";
-      zone.dataset.anchor = `${e.id}.${anchor}`;
-      zone.style.width = `${r.w}px`;
-      zone.style.height = `${r.h}px`;
+      zone.dataset.anchor = `${ref.entity}.${ref.anchor}`;
       scene.append(zone);
       zones.push({ el: zone, ref });
-      tapByEl.set(zone, { kind: "anchor", ref });
     }
-  }
-
-  // --- Scene state ---
-
-  function free(id: string, x: number, y: number): void {
-    const s = st(id);
-    s.x = x;
-    s.y = y;
-    s.parent = null;
-  }
-
-  function hold(id: string, by: string, worn = false): void {
-    st(id).parent = { type: "held", by, worn };
-  }
-
-  function attach(id: string, ref: AnchorRef): void {
-    st(id).parent = { type: "anchor", ref, order: ++order };
-  }
-
-  function holderOf(id: string): string | null {
-    const p = st(id).parent;
-    return p?.type === "held" ? p.by : null;
-  }
-
-  function parentEntity(id: string): string | null {
-    const p = st(id).parent;
-    if (!p) return null;
-    return p.type === "held" ? p.by : p.ref.entity;
-  }
-
-  // The entity plus everything resting on or held by it, recursively.
-  function group(id: string): string[] {
-    const attachedTo = (other: string): boolean => {
-      for (let p = parentEntity(other); p; p = parentEntity(p)) if (p === id) return true;
-      return false;
-    };
-    return [id, ...ENTITIES.map((e) => e.id).filter((other) => other !== id && attachedTo(other))];
-  }
-
-  function occupants(ref: AnchorRef): string[] {
-    const orderOf = (id: string) => {
-      const p = st(id).parent;
-      return p?.type === "anchor" ? p.order : 0;
-    };
-    return ENTITIES.map((e) => e.id)
-      .filter((id) => {
-        const p = st(id).parent;
-        return p?.type === "anchor" && sameRef(p.ref, ref);
-      })
-      .sort((a, b) => orderOf(a) - orderOf(b));
-  }
-
-  function absPos(id: string): Point {
-    const s = st(id);
-    const p = s.parent;
-    if (!p) return { x: s.x, y: s.y };
-    if (p.type === "held") {
-      const h = absPos(p.by);
-      const size = def(p.by).size;
-      return p.worn
-        ? { x: h.x + size * 0.15, y: h.y }
-        : { x: h.x + size * 0.35, y: h.y - size * 0.25 };
-    }
-    return slot(p.ref, occupants(p.ref).indexOf(id));
-  }
-
-  // Occupants stand on the bottom center of the anchor rect, side by side.
-  function slot(ref: AnchorRef, index: number): Point {
-    const o = absPos(ref.entity);
-    const r = rectOf(ref);
-    return { x: o.x + r.x + r.w / 2 + index * STACK, y: o.y + r.y + r.h };
-  }
-
-  // Where the next occupant of `ref` would end up.
-  const dropPoint = (ref: AnchorRef) => slot(ref, occupants(ref).length);
-
-  function zOf(id: string): number {
-    if (def(id).kind === "place") return 10;
-    const p = st(id).parent;
-    if (!p) return 20;
-    if (p.type === "held") return zOf(p.by) + 1;
-    return zoneZ(p.ref) + 1;
-  }
-
-  // Anchor rects sit just behind or in front of their host; occupants right above the rect.
-  function zoneZ(ref: AnchorRef): number {
-    return zOf(ref.entity) + (isBehind(ref.anchor) ? -2 : 2);
   }
 
   // --- Rendering ---
@@ -387,14 +247,15 @@ function runStory(scene: HTMLElement, sentence: HTMLElement): Promise<void> {
       const p = absPos(e.id);
       el.style.left = `${p.x}px`;
       el.style.top = `${p.y}px`;
-      el.style.zIndex = String(zOf(e.id));
+      el.style.zIndex = String(model.zOf(e.id));
     }
     for (const { el, ref } of zones) {
-      const o = absPos(ref.entity);
-      const r = rectOf(ref);
-      el.style.left = `${o.x + r.x}px`;
-      el.style.top = `${o.y + r.y}px`;
-      el.style.zIndex = String(zoneZ(ref));
+      const r = model.anchorBox(ref);
+      el.style.left = `${r.x}px`;
+      el.style.top = `${r.y}px`;
+      el.style.width = `${r.w}px`;
+      el.style.height = `${r.h}px`;
+      el.style.zIndex = String(model.zoneZ(ref));
     }
   }
 
@@ -405,7 +266,7 @@ function runStory(scene: HTMLElement, sentence: HTMLElement): Promise<void> {
 
   async function slide(id: string, mutate: () => void, ms: number): Promise<void> {
     mutate();
-    const ids = group(id);
+    const ids = model.group(id);
     setDuration(ids, ms);
     render();
     await wait(ms);
@@ -441,6 +302,7 @@ function runStory(scene: HTMLElement, sentence: HTMLElement): Promise<void> {
 
   async function appear(id: string): Promise<void> {
     const { el, glyph } = node(id);
+    model.show(id);
     render();
     el.hidden = false;
     glyph.classList.add("pop");
@@ -478,9 +340,9 @@ function runStory(scene: HTMLElement, sentence: HTMLElement): Promise<void> {
       case "put": {
         const object = must(step.object, "object");
         const target = must(step.target, "target");
-        const holder = holderOf(object);
+        const holder = model.holderOf(object);
         if (holder) {
-          const d = dropPoint(target);
+          const d = model.dropPoint(target);
           const side = absPos(holder).x < d.x ? -1 : 1;
           const x = d.x + side * (def(holder).size * 0.5 + def(object).size * 0.3);
           await travel(holder, () => free(holder, x, d.y), "walk");
@@ -528,16 +390,6 @@ function runStory(scene: HTMLElement, sentence: HTMLElement): Promise<void> {
 
   // --- Input ---
 
-  // Topmost hit wins, so a "behind" rect is only tappable where it shows.
-  function hit(x: number, y: number): Tap | null {
-    for (const el of document.elementsFromPoint(x, y)) {
-      const owner = el.closest("[data-entity], [data-anchor]");
-      const tap = owner ? tapByEl.get(owner) : undefined;
-      if (tap) return tap;
-    }
-    return null;
-  }
-
   function elOf(tap: Tap): HTMLElement {
     if (tap.kind === "entity") return node(tap.id).el;
     return must(zones.find((z) => sameRef(z.ref, tap.ref)), "zone").el;
@@ -556,7 +408,10 @@ function runStory(scene: HTMLElement, sentence: HTMLElement): Promise<void> {
 
     scene.addEventListener("pointerdown", (event) => {
       if (!event.isPrimary || busy) return;
-      const tap = hit(event.clientX, event.clientY);
+      // Client coordinates to virtual scene coordinates.
+      const r = scene.getBoundingClientRect();
+      const s = r.width / W;
+      const tap = model.hit({ x: (event.clientX - r.left) / s, y: (event.clientY - r.top) / s });
       if (tap) void onTap(tap);
     });
 
@@ -591,7 +446,10 @@ function runStory(scene: HTMLElement, sentence: HTMLElement): Promise<void> {
 }
 
 export function mountStory(root: HTMLElement): void {
-  if (import.meta.env.DEV) warnOverlappingAnchors();
+  if (import.meta.env.DEV) {
+    warnOverlappingAnchors();
+    checkRoles();
+  }
   const sentence = document.createElement("div");
   sentence.className = "sentence";
   const stage = document.createElement("div");
