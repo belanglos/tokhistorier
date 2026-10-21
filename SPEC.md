@@ -14,7 +14,7 @@ Småord (på, under, i, bakom, bredvid) ska avgöra vad som är rätt handling, 
 
 - 3 handskrivna berättelser, 6 steg vardera, 3–7 ord per mening. En berättelse har förgrening med två slut.
 - 4 verb: take (ta), eat (äta), put (lägga/ställa/gömma), move (gå/hoppa/gömma sig).
-- Emojis som grafik.
+- Emojis som grafik. Undantag: soffan är en enkel inbyggd SVG, eftersom 🛋️ på vissa plattformar ritas med lampa och utan tydlig sittyta, så att ankarna på, under och bakom inte gick att skilja åt.
 - Hemskärm = album med ett kort per berättelse. Avklarade berättelser visar klistermärke (ett per slut), övriga visar "?". Tryck på kort startar berättelsen (även avklarade, så barnet kan spela om).
 - Framsteg och logg i localStorage.
 - Dold exportfunktion för loggen: långtryck (800 ms) på titeln visar loggen som JSON i en textruta med en kopiera-knapp.
@@ -32,6 +32,7 @@ Ljud, talsyntes, röstigenkänning, poäng, synliga timers, konton, backend, ana
 5. Fel handling: kort rolig felanimation (max 600 ms), steget klaras inte, ingen ledtråd, ingen text om att det blev fel. Felanimationer är bara rörelse, aldrig bubblor eller emojis.
 6. För varje tryckroll i ett steg ska scenen ha minst 3 kandidater men bara en rätt tolkning av meningen.
 7. Allt fungerar utan hover och utan tangentbord.
+8. Ankarnas geometri beräknas ur värdens storlek. 'Bakom' och 'i' ritas bakom värden, 'på' framför. En värd har inte både 'i' och 'bakom'. Ankarrutor för samma värd överlappar inte.
 
 ## Tryck per verb
 

@@ -49,12 +49,15 @@
   transform-origin: 50% 100%;
 }
 
+.glyph svg {
+  display: block;
+}
+
 .ent.selected .glyph {
   filter: drop-shadow(0 0 6px #f5b400) drop-shadow(0 0 6px #f5b400);
 }
 
 .anchor {
-  z-index: 15;
   border: 3px dashed rgb(0 0 0 / 0.15);
   border-radius: 14px;
 }

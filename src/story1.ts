@@ -2,7 +2,7 @@
 // with positions and anchors so it can be turned into data later.
 import "./styles/scene.css";
 
-type AnchorKind = "on" | "under" | "in" | "behind";
+type AnchorKind = "on" | "under" | "in" | "behind" | "beside";
 type AnchorRef = { entity: string; anchor: AnchorKind };
 
 type Effect =
@@ -22,18 +22,21 @@ type ActionStep = {
 
 type Point = { x: number; y: number };
 type Rect = { x: number; y: number; w: number; h: number };
-// rect and drop are relative to the owner's foot point (bottom center).
-// "back" puts occupants behind the owner (in a bathtub, behind a sofa).
-type AnchorDef = { rect: Rect; drop: Point; layer: "front" | "back" };
 
 type Entity = {
   id: string;
   kind: "place" | "figure" | "object";
   emoji: string;
-  size: number;
+  svg?: string; // replaces the emoji when set
+  size: number; // height of the bounding box
+  aspect?: number; // width / height, default 1
+  seat?: number; // seat line as a fraction of the height from the top, default 0.5
+  floor?: number; // where feet rest for "in", as a fraction of the height from the top, default 0.7
   x: number;
   y: number;
-  anchors?: Partial<Record<AnchorKind, AnchorDef>>;
+  // Listed anchors get the default geometry for their kind; fields given here override it.
+  // Rects are relative to the entity's foot point (bottom center).
+  anchors?: Partial<Record<AnchorKind, Partial<Rect>>>;
   hidden?: boolean;
 };
 
@@ -41,7 +44,19 @@ const W = 1000;
 const H = 600;
 const FLOOR = 590;
 const STACK = 55;
-const ANCHOR_KINDS: readonly AnchorKind[] = ["on", "under", "in", "behind"];
+const ANCHOR_KINDS: readonly AnchorKind[] = ["on", "under", "in", "behind", "beside"];
+
+// Simple one-colour sofa: the 🛋️ emoji has a lamp and no clear seat on some platforms.
+const SOFA_SVG = `<svg viewBox="0 0 150 100" width="100%" height="100%" fill="#d9634c" stroke="#fdf6e3" stroke-width="3">
+  <rect x="15" y="5" width="120" height="45" rx="8"/>
+  <rect x="12" y="55" width="126" height="28" rx="5"/>
+  <rect x="22" y="44" width="53" height="18" rx="6"/>
+  <rect x="75" y="44" width="53" height="18" rx="6"/>
+  <rect x="0" y="30" width="24" height="53" rx="8"/>
+  <rect x="126" y="30" width="24" height="53" rx="8"/>
+  <rect x="22" y="83" width="9" height="17"/>
+  <rect x="119" y="83" width="9" height="17"/>
+</svg>`;
 
 const ENTITIES: Entity[] = [
   {
@@ -51,23 +66,19 @@ const ENTITIES: Entity[] = [
     size: 190,
     x: 130,
     y: 420,
-    anchors: {
-      on: { rect: { x: -85, y: -140, w: 170, h: 70 }, drop: { x: 0, y: -70 }, layer: "front" },
-      under: { rect: { x: -70, y: -45, w: 140, h: 45 }, drop: { x: 0, y: 0 }, layer: "front" },
-    },
+    anchors: { on: {}, under: {} },
   },
   {
     id: "soffa",
     kind: "place",
-    emoji: "🛋️",
-    size: 180,
+    emoji: "",
+    svg: SOFA_SVG,
+    size: 140,
+    aspect: 1.5,
+    seat: 0.44, // top of the cushions
     x: 400,
     y: 420,
-    anchors: {
-      on: { rect: { x: -80, y: -140, w: 160, h: 65 }, drop: { x: 0, y: -75 }, layer: "front" },
-      under: { rect: { x: -70, y: -45, w: 140, h: 45 }, drop: { x: 0, y: 0 }, layer: "front" },
-      behind: { rect: { x: -80, y: -235, w: 160, h: 60 }, drop: { x: 0, y: -80 }, layer: "back" },
-    },
+    anchors: { on: {}, under: {}, behind: {} },
   },
   {
     id: "badkar",
@@ -76,9 +87,7 @@ const ENTITIES: Entity[] = [
     size: 180,
     x: 680,
     y: 420,
-    anchors: {
-      in: { rect: { x: -80, y: -130, w: 160, h: 70 }, drop: { x: -20, y: -75 }, layer: "back" },
-    },
+    anchors: { in: {} },
   },
   {
     id: "toalett",
@@ -87,10 +96,7 @@ const ENTITIES: Entity[] = [
     size: 150,
     x: 905,
     y: 420,
-    anchors: {
-      on: { rect: { x: -65, y: -150, w: 130, h: 55 }, drop: { x: 0, y: -95 }, layer: "front" },
-      in: { rect: { x: -55, y: -90, w: 110, h: 45 }, drop: { x: 0, y: -45 }, layer: "back" },
-    },
+    anchors: { on: {}, in: {} },
   },
   { id: "katt", kind: "figure", emoji: "🐈", size: 95, x: 280, y: 570 },
   {
@@ -98,12 +104,10 @@ const ENTITIES: Entity[] = [
     kind: "figure",
     emoji: "👨",
     size: 130,
+    seat: 0, // "on" is the head
     x: 540,
     y: 570,
-    anchors: {
-      // "on" is the head.
-      on: { rect: { x: -50, y: -190, w: 100, h: 60 }, drop: { x: 0, y: -120 }, layer: "front" },
-    },
+    anchors: { on: {} },
   },
   // Only there as a third actor candidate.
   { id: "hund", kind: "figure", emoji: "🐶", size: 90, x: 945, y: 570 },
@@ -173,6 +177,56 @@ function must<T>(value: T | null | undefined, what: string): T {
 
 const sameRef = (a: AnchorRef, b: AnchorRef) => a.entity === b.entity && a.anchor === b.anchor;
 
+// --- Anchor geometry, derived from the host's bounding box ---
+
+const boxOf = (e: Entity) => ({ w: e.size * (e.aspect ?? 1), h: e.size });
+
+// "behind" and "in" are drawn behind the host; every other anchor in front of it.
+const isBehind = (kind: AnchorKind) => kind === "behind" || kind === "in";
+
+function anchorRect(e: Entity, kind: AnchorKind): Rect {
+  const { w, h } = boxOf(e);
+  const seatY = -h + (e.seat ?? 0.5) * h;
+  const defaults: Record<AnchorKind, Rect> = {
+    on: { x: -0.4 * w, y: seatY - 0.3 * h, w: 0.8 * w, h: 0.3 * h },
+    under: { x: -0.35 * w, y: 0, w: 0.7 * w, h: 0.25 * h },
+    // Shifted up and right: only the top sticks out above the host.
+    behind: { x: -0.15 * w, y: -1.35 * h, w: 0.6 * w, h: 0.75 * h },
+    // Bottom on the floor line, so the host's front hides the occupant's lower part.
+    in: { x: -0.3 * w, y: -1.3 * h, w: 0.6 * w, h: (e.floor ?? 0.7) * h + 0.3 * h },
+    beside: { x: 0.6 * w, y: -0.6 * h, w: 0.6 * w, h: 0.6 * h },
+  };
+  return { ...defaults[kind], ...e.anchors?.[kind] };
+}
+
+// Dev check: anchor rects of one host must not overlap. For "behind" and "in"
+// only the part that sticks out above the host counts, the rest is hidden by it.
+function warnOverlappingAnchors(): void {
+  const TOLERANCE = 4;
+  for (const e of ENTITIES) {
+    const top = -boxOf(e).h;
+    const kinds = ANCHOR_KINDS.filter((k) => e.anchors?.[k]);
+    if (kinds.includes("in") && kinds.includes("behind")) {
+      console.warn(`${e.id} has both "in" and "behind"; a host may only have one of them`);
+    }
+    const visible = (k: AnchorKind): Rect => {
+      const r = anchorRect(e, k);
+      return isBehind(k) ? { ...r, h: Math.max(0, Math.min(r.y + r.h, top) - r.y) } : r;
+    };
+    kinds.forEach((a, i) => {
+      for (const b of kinds.slice(i + 1)) {
+        const ra = visible(a);
+        const rb = visible(b);
+        const ox = Math.min(ra.x + ra.w, rb.x + rb.w) - Math.max(ra.x, rb.x);
+        const oy = Math.min(ra.y + ra.h, rb.y + rb.h) - Math.max(ra.y, rb.y);
+        if (ox > TOLERANCE && oy > TOLERANCE) {
+          console.warn(`Anchors ${e.id}.${a} and ${e.id}.${b} overlap by ${Math.round(ox)}x${Math.round(oy)} px`);
+        }
+      }
+    });
+  }
+}
+
 function isCorrect(step: ActionStep, a: Tap, b: Tap): boolean {
   const first = step.verb === "put" ? step.object : step.actor;
   if (a.kind !== "entity" || a.id !== first) return false;
@@ -184,8 +238,12 @@ function isCorrect(step: ActionStep, a: Tap, b: Tap): boolean {
 function runStory(scene: HTMLElement, sentence: HTMLElement): Promise<void> {
   const defs = new Map(ENTITIES.map((e) => [e.id, e]));
   const def = (id: string) => must(defs.get(id), `entity ${id}`);
-  const anchorDef = (ref: AnchorRef) =>
-    must(def(ref.entity).anchors?.[ref.anchor], `anchor ${ref.entity}.${ref.anchor}`);
+  const rects = new Map<string, Rect>();
+  for (const e of ENTITIES) {
+    for (const k of ANCHOR_KINDS) if (e.anchors?.[k]) rects.set(`${e.id}.${k}`, anchorRect(e, k));
+  }
+  const rectOf = (ref: AnchorRef) =>
+    must(rects.get(`${ref.entity}.${ref.anchor}`), `anchor ${ref.entity}.${ref.anchor}`);
 
   const state = new Map<string, EntityState>(
     ENTITIES.map((e) => [e.id, { x: e.x, y: e.y, parent: null }]),
@@ -206,21 +264,28 @@ function runStory(scene: HTMLElement, sentence: HTMLElement): Promise<void> {
     el.hidden = e.hidden ?? false;
     const glyph = document.createElement("span");
     glyph.className = "glyph";
-    glyph.textContent = e.emoji;
+    if (e.svg) {
+      const { w, h } = boxOf(e);
+      glyph.style.width = `${w}px`;
+      glyph.style.height = `${h}px`;
+      glyph.innerHTML = e.svg;
+    } else {
+      glyph.textContent = e.emoji;
+    }
     el.append(glyph);
     scene.append(el);
     nodes.set(e.id, { el, glyph });
     tapByEl.set(el, { kind: "entity", id: e.id });
 
     for (const anchor of ANCHOR_KINDS) {
-      const a = e.anchors?.[anchor];
-      if (!a) continue;
+      if (!e.anchors?.[anchor]) continue;
       const ref = { entity: e.id, anchor };
+      const r = rectOf(ref);
       const zone = document.createElement("div");
       zone.className = "anchor";
       zone.dataset.anchor = `${e.id}.${anchor}`;
-      zone.style.width = `${a.rect.w}px`;
-      zone.style.height = `${a.rect.h}px`;
+      zone.style.width = `${r.w}px`;
+      zone.style.height = `${r.h}px`;
       scene.append(zone);
       zones.push({ el: zone, ref });
       tapByEl.set(zone, { kind: "anchor", ref });
@@ -288,26 +353,30 @@ function runStory(scene: HTMLElement, sentence: HTMLElement): Promise<void> {
         ? { x: h.x + size * 0.15, y: h.y }
         : { x: h.x + size * 0.35, y: h.y - size * 0.25 };
     }
-    const o = absPos(p.ref.entity);
-    const a = anchorDef(p.ref);
-    const i = occupants(p.ref).indexOf(id);
-    return { x: o.x + a.drop.x + i * STACK, y: o.y + a.drop.y };
+    return slot(p.ref, occupants(p.ref).indexOf(id));
+  }
+
+  // Occupants stand on the bottom center of the anchor rect, side by side.
+  function slot(ref: AnchorRef, index: number): Point {
+    const o = absPos(ref.entity);
+    const r = rectOf(ref);
+    return { x: o.x + r.x + r.w / 2 + index * STACK, y: o.y + r.y + r.h };
   }
 
   // Where the next occupant of `ref` would end up.
-  function dropPoint(ref: AnchorRef): Point {
-    const o = absPos(ref.entity);
-    const a = anchorDef(ref);
-    return { x: o.x + a.drop.x + occupants(ref).length * STACK, y: o.y + a.drop.y };
-  }
+  const dropPoint = (ref: AnchorRef) => slot(ref, occupants(ref).length);
 
   function zOf(id: string): number {
     if (def(id).kind === "place") return 10;
     const p = st(id).parent;
     if (!p) return 20;
     if (p.type === "held") return zOf(p.by) + 1;
-    if (def(p.ref.entity).kind !== "place") return zOf(p.ref.entity) + 1;
-    return anchorDef(p.ref).layer === "back" ? 5 : 20;
+    return zoneZ(p.ref) + 1;
+  }
+
+  // Anchor rects sit just behind or in front of their host; occupants right above the rect.
+  function zoneZ(ref: AnchorRef): number {
+    return zOf(ref.entity) + (isBehind(ref.anchor) ? -2 : 2);
   }
 
   // --- Rendering ---
@@ -322,9 +391,10 @@ function runStory(scene: HTMLElement, sentence: HTMLElement): Promise<void> {
     }
     for (const { el, ref } of zones) {
       const o = absPos(ref.entity);
-      const r = anchorDef(ref).rect;
+      const r = rectOf(ref);
       el.style.left = `${o.x + r.x}px`;
       el.style.top = `${o.y + r.y}px`;
+      el.style.zIndex = String(zoneZ(ref));
     }
   }
 
@@ -458,18 +528,14 @@ function runStory(scene: HTMLElement, sentence: HTMLElement): Promise<void> {
 
   // --- Input ---
 
+  // Topmost hit wins, so a "behind" rect is only tappable where it shows.
   function hit(x: number, y: number): Tap | null {
-    let anchor: Tap | null = null;
-    let place: Tap | null = null;
     for (const el of document.elementsFromPoint(x, y)) {
       const owner = el.closest("[data-entity], [data-anchor]");
       const tap = owner ? tapByEl.get(owner) : undefined;
-      if (!tap) continue;
-      if (tap.kind === "anchor") anchor ??= tap;
-      else if (def(tap.id).kind === "place") place ??= tap;
-      else return tap; // figures and objects win over anchors and places
+      if (tap) return tap;
     }
-    return anchor ?? place;
+    return null;
   }
 
   function elOf(tap: Tap): HTMLElement {
@@ -525,6 +591,7 @@ function runStory(scene: HTMLElement, sentence: HTMLElement): Promise<void> {
 }
 
 export function mountStory(root: HTMLElement): void {
+  if (import.meta.env.DEV) warnOverlappingAnchors();
   const sentence = document.createElement("div");
   sentence.className = "sentence";
   const stage = document.createElement("div");
